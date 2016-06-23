@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+# FILE library_appointment.py
+# CREATED BY 邵传明 AT 2016-06-22 23:47
+
+import requests
+import sys
+from bs4 import BeautifulSoup
+
+def prErr(prt): print("\033[91m {}\033[00m".format(prt)) # red
+def prGoo(prt): print("\033[92m {}\033[00m" .format(prt)) # green
+def prNot(prt): print("\033[93m {}\033[00m" .format(prt)) # yellow
+
+def debug(s):
+#     print(s)
+    pass
+
+def get_credit(url, headers):
+    '''一次 get， 一次 post 到 url, 采集到 cookie 同埋 data'''
+    headers["Referer"] = url
+    debug(headers)
+    data = {}
+
+    try:
+        s = requests.get(url, headers=headers)
+    except:
+        prt("Could not get {}, exit".format(url))
+        exit()
+
+    stext = s.text
+    debug(stext)
+
+    if stext.find('我知道了'):
+        if stext.find('本系统的开放时间') >= 0: # 开放：20:00 ~ 7:30 
+            prErr('\n未到开放时间\nexiting...\n')
+            exit()
+        else:
+# 第一次
+            soup = BeautifulSoup(s.text)
+            inp = soup.find_all('input')
+
+            for i in inp:
+                data[i['name']] = i['value']
+
+            debug("first time data = {}".format(data))
+
+# 第二次
+            try:
+                s = requests.post(url, headers=headers, data=data)
+            except:
+                prErr("Could not get {}, exit".format(url))
+                exit()
+            debug("second {}".format(s.text))
+            debug("headders, {}".format(s.headers))
+            cook = s.headers['Set-cookie'].split(";")[0]
+            soup = BeautifulSoup(s.text)
+            inp = soup.find_all('input')
+            for i in inp:
+                if i['name'] in ['__VIEWSTATE', '__EVENTVALIDATION']:
+                    data[i['name']] = i['value']
+
+            data2 = {}
+            for d in data:
+                if d in ["__VIEWSTATE", "__EVENTVALIDATION", "TextBox1", "TextBox2", "Button_ok"]:
+                    data2[d] = data[d]
+            data = data2
+
+            data['TextBox1'] = '232477'
+            data['TextBox2'] = '371326'
+            data['Button_ok'] = '确定'
+            data['Button_ok'] = '%E7%A1%AE%E5%AE%9A'
+            debug(data)
+    return cook, data, headers
+
+def get_data(s):
+    '''get data to post from web page'''
+    data = {}
+    soup = BeautifulSoup(s)
+    inp = soup.find_all('input')
+    for i in inp:
+        try:
+            data[i['name']] = i['value']
+        except:
+            prNot("Notice: {} doesn't have a value".format(i['name']))
+            pass
+    return data
+
+def vali_data(data, touse, toadd={}):
+    '''return a data dict for posting'''
+    data2 = {}
+    for d in data:
+        if d in touse:
+            data2[d] = data[d]
+    for d in toadd:
+        data2[d] = toadd[d]
+    return data2
+
+def get_2data_from_look(s):
+    '''get _VIEWSTATE and _EVENTVALIDATION from text from a LOOK page'''
+    data = {}
+    tail = s.split('\r\n')[-4].split('|')
+    for i, t in enumerate(tail):
+        if t == "__VIEWSTATE":
+            data[t] = tail[i+1]
+        elif t == "__EVENTVALIDATION":
+            data[t] = tail[i+1]
+    return data
+
+def get_status_info(url, headers, data, location):
+#     url = "http://58.194.172.92/roompretoday/ReaderLook.aspx"
+    s = requests.post(url, headers=headers, data=data)
+
+    data2 = get_2data_from_look(s.text)
+
+    for d in data2:
+        data[d] = data2[d]
+
+    debug(s.text)
+
+    soup = BeautifulSoup(s.text)
+    inp = soup.find_all('input')
+
+    status = []
+    for i in inp:
+        if i['id'] == location:
+            location = i['value']
+        elif i['id'].startswith('R'):
+            val = i['value']
+            lb = val.find('[')
+            rb = val.find(']')
+            people = eval(val[lb+1: rb])
+            status.append([i['id'], i['value'], people])
+    return status, data
+
+def all_occupied(status):
+    '''no room avaliable'''
+    st = True
+    for s in status:
+        if s[2] != 0:
+            st = False
+            break
+        st = True
+    return st
+
+def choose_room(status):
+    '''选择边个自习室'''
+    def again():
+        prNot("Chooing incorrect, exiting...\n")
+        exit()
+#         choose_room(status)
+
+    if AUTO == True:
+        for s in status:
+            if s[2] != 0:
+                cho = s
+                prNot("\nAutomatically choosed room {}: {}\n".format(s[0], s[1]))
+                break
+    else:
+        choi = input("\nChoose a room: ")
+        if choi == '':
+            again()
+        for s in status:
+            if s[0] == choi:
+                if s[2] == 0:
+                    again()
+                else:
+                    cho = s
+                    prNot("\nChoosed room {}: {}\n".format(s[0], s[1]))
+                    break
+    return cho
+
+def get_info_text(s):
+    soup = BeautifulSoup(s)
+    try:
+        big = soup.find_all('span', {'class': 'big'})[0]
+        t = big.get_text()
+    except:
+        prErr("\n    Error occured when choosing seat,\n    Maybe rooms unavaliable.")
+        exit()
+    return t
+
+AUTO = False
+school = "L1"
+
+args = sys.argv
+
+prNot("\n自习室预约\n")
+if 'a' in args:
+    AUTO = True
+    prNot("Running in automatic mode...\n")
+# exit()
+
+TODAY_URL = "http://58.194.172.92/roompretoday/"
+TODAY_URL_D = "http://58.194.172.92/roompretoday/Default.aspx"
+TODAY_URL_LOOK = "http://58.194.172.92/roompretoday/ReaderLook.aspx"
+TOMORROW_URL = "http://58.194.172.92/roompre/"
+TOMORROW_URL_D = "http://58.194.172.92/roompre/Default.aspx"
+TOMORROW_URL_LOOK = "http://58.194.172.92/roompre/ReaderLook.aspx"
+DEST_URL_LOOK = TOMORROW_URL_LOOK
+DEST_URL_D = TOMORROW_URL_D
+DEST_URL = TOMORROW_URL
+
+
+url = "http://58.194.172.92/roompre/"
+headers = {
+"Host": "58.194.172.92",
+"Proxy-Connection": "keep-alive",
+"Cache-Control": "max-age=0",
+"Origin": "http://58.194.172.92",
+"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36",
+"Content-Type": "application/x-www-form-urlencoded",
+"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+"Referer": "http://58.194.172.92/roompre/",
+"Accept-Encoding": "gzip, deflate",
+"Accept-Language": "zh,en;q=0.8,zh-CN;q=0.6",
+}
+
+cook, data, headers = get_credit(DEST_URL, headers)
+
+headers["Cookie"] = cook
+# 
+s = requests.post(DEST_URL_D, headers=headers, data=data)
+debug(s.text)
+
+# <table><tr><td>
+# <span id="Label1" title="33_10_2016/6/24 8:00:00" style="font-size:X-Large;">您已经预约了图书馆101的座位,座位号是:010,请在明天8点30分前刷卡进入图书馆,过时预约失效,预约违规次数增加一次,欢迎使用。</span></td></tr>
+# <tr><td>
+
+if s.text.find("已经预约"):
+    soup = BeautifulSoup(s.text)
+    yuyuemessage = soup.find_all('span', {'id': 'Label1'})[0].get_text()
+    if s.text.find("预约违规"):
+        weiyuemessage = soup.find_all('span', {'id': 'Label_preblack'})[0].get_text()
+        prNot(weiyuemessage)
+    prNot(yuyuemessage)
+    exit()
+
+data = get_data(s.text)
+schoolName = data[school]
+touse = [
+"__EVENTTARGET",
+"__EVENTARGUMENT",
+"__VIEWSTATE",
+"__EVENTVALIDATION",
+school
+]
+
+toadd = {
+'__ASYNCPOST':'true',
+'ScriptManager1':'UpdatePanel1%7CL4',
+}
+
+data = vali_data(data, touse, toadd)
+
+debug(data)
+
+
+status, data = get_status_info(DEST_URL_LOOK, headers, data, school)
+
+# def prLightPurple(prt): print("\033[94m {}\033[00m" .format(prt)"]]")
+# def prPurple(prt): print("\033[95m {}\033[00m" .format(prt)"]]")
+# def prCyan(prt): print("\033[96m {}\033[00m" .format(prt)"]]")
+# def prLightGray(prt): print("\033[97m {}\033[00m" .format(prt)"]]")
+# def prBlack(prt): print("\033[98m {}\033[00m" .format(prt)"]]")
+
+debug(status)
+
+# printing status:
+print("Status of: \033[96m {}\033[00m \n".format(schoolName))
+for s in status:
+    if s[2] == 0:
+        print("    ", s[0], s[1])
+    else:
+        prGoo("    {} {}".format(s[0], s[1]))
+
+
+if all_occupied(status):
+    prNot("No room avaliable, sorry")
+    exit()
+
+room = choose_room(status)
+
+toadd = {
+'ScriptManager1': 'UpdatePanel1|' + room[0],
+room[0]: room[1]
+}
+
+touse = [
+"__VIEWSTATE",
+"__EVENTVALIDATION",
+"__EVENTTARGET",
+"__EVENTARGUMENT",
+"__ASYNCPOST",
+]
+
+data2 = vali_data(data, touse, toadd)
+headers['Referer'] = 'http://58.194.172.92/roompretoday/Default.aspx'
+headers['X-Requested-With'] = 'XMLHttpRequest'
+headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+headers['Accept'] = '*/*'
+
+seatMap = requests.post(DEST_URL_LOOK, headers=headers, data=data2)
+
+ta1 = get_2data_from_look(seatMap.text) 
+ta2 = {"ScriptManager1":"UpdatePanel1|imageM", "__EVENTTARGET":"imageM", "":"", '__EVENTARGUMENT': '0'}
+toadd = {}
+for t in ta1:
+    toadd[t] = ta1[t]
+for t in ta2:
+    toadd[t] = ta2[t]
+    
+data3 = vali_data(data, touse, toadd)
+
+s = requests.post(DEST_URL_LOOK, headers=headers, data=data3)
+
+prGoo("\n{}\n".format(get_info_text(s.text)))
+
+cancel = input("Cancel it? ")
+
+if cancel == 'y':
+    ta1 = get_2data_from_look(s.text) 
+    ta2 = {'ScriptManager1': 'UpdatePanel1|cacel', '__EVENTTARGET':'imageM', '__EVENTARGUMENT':'8', '__ASYNCPOST':'true', 'cacel':'取消' }
+    toadd = {}
+    for t in ta1:
+        toadd[t] = ta1[t]
+    for t in ta2:
+        toadd[t] = ta2[t]
+        
+    data4 = vali_data(data, touse, toadd)
+    s = requests.post(DEST_URL_LOOK, headers=headers, data=data4)
+    prNot("\nCanceled Successfully")
+else:
+    ta1 = get_2data_from_look(s.text) 
+    ta2 = {'ScriptManager1': 'UpdatePanel1|33_10_8_0_010_d', '__EVENTTARGET':'imageM', '__EVENTARGUMENT':'1', '__ASYNCPOST':'true', '33_10_8_0_010_d':'确定' }
+    toadd = {}
+    for t in ta1:
+        toadd[t] = ta1[t]
+    for t in ta2:
+        toadd[t] = ta2[t]
+        
+    data4 = vali_data(data, touse, toadd)
+    s = requests.post(DEST_URL_LOOK, headers=headers, data=data4)
+    print(s.text)
+    prNot("\nAppointed Successfully")
+    prGoo("\nDone!\n")
